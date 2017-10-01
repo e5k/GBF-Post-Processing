@@ -35,7 +35,7 @@ addpath('dependencies/');
 Debug
     fl = 'vulcano_blocks.dat';
     inBal = struct('name', 'test',...
-        'res', 100,...             % Resolution
+        'gridRes', [100,10],...             % Resolution
         'eT', [60,100,4000,8000],...     % Vector of energy thresholds
         'pT', [10, 25, 50, 75, 90],...       % Vector of probability thresholds
         'dI', 250,...                      % Distance interval
@@ -105,6 +105,12 @@ end
 % New definition of the grid resolution by a 2x1 vector representing the
 % resolution of the pixel-based approach and the resolution of the
 % zone-based approach
+if length(inBal.gridRes) == 1
+    % If no grid resolution specified for the grid used for the
+    % concentric/radial approach is defined, use the same as the pixel
+    % approach
+    inBal.gridRes = [inBal.gridRes, inBal.gridRes];
+end
 
 %% Load file
 % Create directory
@@ -135,6 +141,8 @@ y       = data(:,2);                    % Northing
 e       = data(:,6).*1000;              % Energy (J)
 n       = size(data,1);                 % Number of bombs
 d       = sqrt((x-inBal.vE).^2 + (y-inBal.vN).^2);  % Distance between vent and bombs
+r       = atan2d(x-inBal.vE,y-inBal.vN);
+r(r<0)  = 360+r(r<0);
 id      = zeros(size(x,1),2);           % Vectors of indices for cartesian grid
 
 data    = data(:,3:end);                % Colums:
@@ -146,89 +154,197 @@ data    = data(:,3:end);                % Colums:
                                         % 6: Ejection andgle(deg)
                                         % 7: Flight time (sec)
 
+%% Define storage
+% Grid
+grid        = struct;   % Storage for the grid data
+% grid.pixelP
+% grid.pixelE
+coorRef     = struct;   % Storage for the reference coordinates of the grid
+concentric  = struct;   % Storage for the concentric distance
+radial      = struct;   % Storage for the radial sectors
+                                        
 %% Define the cartesian grid                                                                               
-% Create cartesian grid
-[gridEast, gridNorth]   = meshgrid(min(x)-inBal.gridRes(1):inBal.gridRes(1):max(x)+inBal.gridRes(1),...
+% Create cartesian grid for the pixel approach
+
+[coorRef.pixelEast, coorRef.pixelNorth]     = meshgrid(min(x)-inBal.gridRes(1):inBal.gridRes(1):max(x)+inBal.gridRes(1),...
     min(y)-inBal.gridRes(1):inBal.gridRes(1):max(y)+inBal.gridRes(1));
-gridNorth               = flipud(gridNorth);
+coorRef.pixelNorth                          = flipud(coorRef.pixelNorth);
 
-[gridLat,gridLon]       = utm2ll(gridEast,gridNorth,ones(size(gridEast)).*inBal.vZ);
-[vLat,vLon]             = utm2ll(inBal.vE, inBal.vN, inBal.vZ);
 
+% New approach using histcounts2
+%% --------------------------------------------
+% Define grid in projected and geographic coordinates
+[pixel.east, pixel.north] = meshgrid(min(x)-inBal.gridRes(1):inBal.gridRes(1):max(x)+inBal.gridRes(1),...
+    min(y)-inBal.gridRes(1):inBal.gridRes(1):max(y)+inBal.gridRes(1));
+pixel.northing            = flipud(coorRef.pixelNorth);
+[pixel.lat, pixel.lon]    = utm2ll(pixel.east, pixel.north, ones(size(coorRef.pixelEast)).*inBal.vZ);
+
+% Define storage
+pixel.E     = zeros(size(pixel.east,1), size(pixel.east,2), length(inBal.pT));
+pixel.N     = zeros(size(pixel.east,1), size(pixel.east,2), length(inBal.eT));
+pixel.Pabs  = zeros(size(pixel.east,1), size(pixel.east,2), length(inBal.eT));
+pixel.Prel  = zeros(size(pixel.east,1), size(pixel.east,2), length(inBal.eT));
+
+% Bin the total number of particles
+[pixel.Nt,~,~,xi,yi] = histcounts2(x,y,pixel.easting(1,:), pixel.northing(:,1));
+
+% Calculate the number of particles per pixel per energy threshold and the
+% absolute and relative probabilities (in %)
+for iE = 1:length(inBal.eT)
+    pixel.N(:,:,iE)     = histcounts2(x(e>inBal.eT(iE)), y(e>inBal.eT(iE)), pixel.east(1,:), pixel.north(:,1));
+    pixel.Pabs(:,:,iE)  = pixel.N(:,:,iE) ./ n .* 100;
+    pixel.Prel(:,:,iE)  = pixel.N(:,:,iE) ./ pixel.Nt .* 100;
+end
+
+% Calculate the energy for a given exceedance probability
+for iE = 1:size(pixel.N, 2)
+    for iN = 1:size(pixel.N, 1)
+        for iP = 1:length(inBal.pT)
+            pixel.E(iN, iE, iP) = prctile(e(xi==iE & yi==iN), 100-inBal.pT(iP));
+        end
+    end
+end
+
+
+
+
+
+
+%% --------------------------------------------
+
+
+
+% Create cartesian grid for the concentric/radial approaches
+[coorRef.crEast, coorRef.crNorth]           = meshgrid(min(x)-inBal.gridRes(2):inBal.gridRes(2):max(x)+inBal.gridRes(2),...
+    min(y)-inBal.gridRes(2):inBal.gridRes(2):max(y)+inBal.gridRes(2));
+coorRef.crNorth                             = flipud(coorRef.crNorth);
+
+% Convert to geographical coordinates for plotting
+[coorRef.pixelLat, coorRef.pixelLon]        = utm2ll(coorRef.pixelEast, coorRef.pixelNorth, ones(size(coorRef.pixelEast)).*inBal.vZ);
+[coorRef.crLat, coorRef.crLon]              = utm2ll(coorRef.crEast, coorRef.crNorth,ones(size(coorRef.crEast)).*inBal.vZ);
+
+% Same for the vent
+[vLat,vLon]                                 = utm2ll(inBal.vE, inBal.vN, inBal.vZ);
+
+% Adjust sizes of storage matrices to grids
+grid.pixelP         = zeros(size(coorRef.pixelEast, 1), size(coorRef.pixelEast, 2), length(inBal.eT), 2);   % Pixel approach, probability
+grid.pixelE         = zeros(size(coorRef.pixelEast, 1), size(coorRef.pixelEast, 2), length(inBal.pT));      % Pixel approach, energy
+grid.pixelN         = zeros(size(coorRef.pixelEast, 1), size(coorRef.pixelEast, 2), length(inBal.pT));      % Pixel approach, number of particles per energy threshold
+grid.pixelNt        = zeros(size(coorRef.pixelEast, 1), size(coorRef.pixelEast, 2));                        % Pixel approach, total number of particles
+grid.concentricP    = zeros(size(coorRef.crEast, 1), size(coorRef.crEast, 2), length(inBal.eT), 2);         % Concentric approach, probability
+grid.concentricE    = zeros(size(coorRef.crEast, 1), size(coorRef.crEast, 2), length(inBal.eT));            % Concentric approach, energy
+grid.concentricN    = zeros(size(coorRef.crEast, 1), size(coorRef.crEast, 2));                              % Concentric approach, number of particles
+grid.concentricI    = zeros(size(coorRef.crEast, 1), size(coorRef.crEast, 2));                              % Concentric approach, index
+grid.radialP        = zeros(size(coorRef.crEast, 1), size(coorRef.crEast, 2), length(inBal.eT), 2);         % Radial approach, probability
+grid.radialE        = zeros(size(coorRef.crEast, 1), size(coorRef.crEast, 2), length(inBal.eT));            % Radial approach, energy
+grid.radialN        = zeros(size(coorRef.crEast, 1), size(coorRef.crEast, 2));                              % Radial approach, number of particles
+grid.radialI        = zeros(size(coorRef.crEast, 1), size(coorRef.crEast, 2));                              % Radial approach, index
 
 %% 2 Conversion to cartesian grid and probability calculations
 display(sprintf('\tConverting to cartesian grid'));
 % Storage matrices
-stor_part = zeros(size(gridNorth,1), size(gridEast,2));                     % Number of particles
-stor_en   = zeros(size(gridNorth,1), size(gridEast,2), length(inBal.eT));   % Probability to exceed a given energy
-stor_prb  = zeros(size(gridNorth,1), size(gridEast,2), length(inBal.pT));   % Energy for a probability of occurrence
+%stor_part = zeros(size(pixelNorth,1), size(pixelEast,2));                     % Number of particles
+%stor_en   = zeros(size(pixelNorth,1), size(pixelEast,2), length(inBal.eT));   % Probability to exceed a given energy
+%stor_prb  = zeros(size(pixelNorth,1), size(pixelEast,2), length(inBal.pT));   % Energy for a probability of occurrence
 
 % Retrieve the X position of each bomb in the grid
-for iX = 1:size(gridEast,2)-1
-    id(x>=gridEast(1,iX) & x<gridEast(1,iX+1),1)    = iX;
+for iX = 1:size(coorRef.pixelEast,2)-1
+    id(x>=coorRef.pixelEast(1,iX) & x<coorRef.pixelEast(1,iX+1),1)    = iX;
 end
 % Retrieve the Y position of each bomb in the grid
-for iY = 1:size(gridEast,1)-1
-    id(y<=gridNorth(iY,1) & y>gridNorth(iY+1,1),2)  = iY;
+for iY = 1:size(coorRef.pixelEast,1)-1
+    id(y<=coorRef.pixelNorth(iY,1) & y>coorRef.pixelNorth(iY+1,1),2)  = iY;
 end
 
 % Parse the data and calculate probabilities
-count = 1;
-h = waitbar(0,'Computing probabilities...');
-for iX = 1:size(gridEast,2)
-    for iY = 1:size(gridNorth,1)
+%count = 1;
+%h = waitbar(0,'Computing probabilities...');
+for iX = 1:size(coorRef.pixelEast,2)
+    for iY = 1:size(coorRef.pixelNorth,1)
         tmpI = id(:,1)==iX & id(:,2)==iY;
         
         % Number of particles
-        stor_part(iY, iX) = length(x(tmpI));
+        grid.pixelNt(iY, iX) = length(x(tmpI));
         
-        % Number of particles in pixel with energy > inBal.eT
+        % Number of particles in pixel with energy eT
         for j = 1:length(inBal.eT)
-            stor_en(iY, iX, j) = sum(e(tmpI)>=inBal.eT(j));
+            grid.pixelN(iY, iX, j) = sum(e(tmpI)>=inBal.eT(j));
         end
         
         % Energy for a given probability of occurrence
         for j = 1:length(inBal.pT)
-            stor_prb(iY, iX, j) = prctile(e(tmpI), 100-inBal.pT(j)); % Here, the probability used to calculate the energy is considered as 100-percentile
+            grid.pixelE(iY, iX, j) = prctile(e(tmpI), 100-inBal.pT(j)); % Here, the probability used to calculate the energy is considered as 100-percentile
         end 
 
-        count = count+1;
-        waitbar(count / (size(gridEast,2)*size(gridEast,1)));
+%        count = count+1;
+%        waitbar(count / (size(coorRef.pixelEast,2)*size(coorRef.pixelEast,1)));
     end
 end
-close(h)
+%close(h)
+
+% Calculate probabilities in percent
+%grid.pixelP(:,:,:,2) = grid.pixelP(:,:,:,1) ./ repmat(grid.pixelN,1,1,length(inBal.eT)) .* 100;   % Relative probabilities
+%grid.pixelP(:,:,:,1) = grid.pixelP(:,:,:,1) ./ n .* 100;                                            % Absolute probabilities
 
 %% 3 Probability calculations per distance enveloppes and radial sectors
 % First, define matrices used for histograms
 % a - distance
-dMat        = sqrt((gridEast-inBal.vE).^2 + (gridNorth-inBal.vN).^2);               % Euclidian distance from the vent
-dVec        = 0:inBal.dI:ceil(max(d)/1000)*1000;                            % Distance vector
-dHist       = zeros(length(dVec), length(inBal.eT),2);                      % Matrix to plot histograms
+%dMat 
+%dVec 
+%dHist 
+%grid.concentricI    = sqrt((coorRef.crEast-inBal.vE).^2 + (coorRef.crNorth-inBal.vN).^2);               % Euclidian distance from the vent 
+% concentric.vec      = 0:inBal.dI:ceil(max(d)/1000)*1000;                            % Distance vector 
+% concentric.hist     = zeros(length(concentric.vec), length(inBal.eT),2);                      % Matrix to plot histograms
+% concentric.vec      = 0:inBal.dI:ceil(max(d)/1000)*1000;                            % Distance vector 
+
+concentric.bin      = 0:inBal.dI:ceil(max(d)/1000)*1000;
+concentric.Nt       = zeros(length(concentric.bin),1);
+concentric.N        = zeros(length(concentric.bin), length(inBal.eT));
+concentric.E        = zeros(length(concentric.bin), length(inBal.pT));
+concentric.P        = zeros(length(concentric.bin), length(inBal.eT), 2);
+
+for iC = 1:length(concentric.bin)-1
+    concentric.Nt(iC) = nnz(d > concentric.bin(iC) & d <= concentric.bin(iC+1));
+    for iE = 1:length(inBal.eT)
+        concentric.N(iC,iE) = nnz(d > concentric.bin(iC) & d <= concentric.bin(iC+1) & e > inBal.eT(iE));
+    end
+    for iP = 1:length(inBal.pT)
+        concentric.E(iC,iP) = prctile(e(d > concentric.bin(iC) & d <= concentric.bin(iC+1)), 100-inBal.pT(iP));
+    end
+end
 
 % b - radial sector
-rMat        = atan2d(gridEast-inBal.vE,gridNorth-inBal.vN);                         % Angle from the vent
-idx         = rMat<0;                                                       % Angle correction to be in the interval [0 360]
-rMat(idx)   = 360+rMat(idx);
-rVec        = 0:inBal.rI:360;
-rHist       = zeros(length(rVec), length(inBal.eT),2);                      % Matrix to plot histograms
+%rMat 
+%idx
+%rMat
+%rVec
+%rHist
+grid.radialI        = atan2d(coorRef.crEast-inBal.vE,coorRef.crNorth-inBal.vN);                         % Angle from the vent                                                       % Angle correction to be in the interval [0 360]
+grid.radialI(grid.radialI<0) = 360+grid.radialI(grid.radialI<0);
+radial.vec          = 0:inBal.rI:360;
+radial.hist         = zeros(length(radial.vec), length(inBal.eT),2);                      % Matrix to plot histograms
 
 % Second, define matrices to plot distance/radial sectors on a map
 % Dim 1 = lon
 % Dim 2 = lat
 % Dim 3 = Energy threshold
 % Dim 4 = Prob over total number of particles (1) or Prob over particles within enveloppe (2)
-dP  = zeros(size(dMat,1), size(dMat,2), length(inBal.eT),2);            
-rP  = zeros(size(dMat,1), size(dMat,2), length(inBal.eT),2); 
+%dP  = zeros(size(dMat,1), size(dMat,2), length(inBal.eT),2);            
+%rP  = zeros(size(dMat,1), size(dMat,2), length(inBal.eT),2); 
 
 for iE = 1:length(inBal.eT)  % Loop over energy thresholds
-    tmp_storD1       = zeros(size(dMat,1),size(dMat,2));   % Temp 2D storage matrix
-    tmp_storD2       = zeros(size(dMat,1),size(dMat,2));   % Temp 2D storage matrix
-    tmp_storR1       = zeros(size(rMat,1),size(rMat,2));   % Temp 2D storage matrix
-    tmp_storR2       = zeros(size(rMat,1),size(rMat,2));   % Temp 2D storage matrix
+%     tmp_storD1       = zeros(size(dMat,1),size(dMat,2));   % Temp 2D storage matrix
+%     tmp_storD2       = zeros(size(dMat,1),size(dMat,2));   % Temp 2D storage matrix
+%     tmp_storR1       = zeros(size(rMat,1),size(rMat,2));   % Temp 2D storage matrix
+%     tmp_storR2       = zeros(size(rMat,1),size(rMat,2));   % Temp 2D storage matrix
     
     % a - distance
-    for iD = 1:length(dVec)-1
-        idx_dist        = dMat > dVec(iD) & dMat <= dVec(iD+1);             % Index of pixels within the distance increment
+    for iD = 1:length(concentric.bin)-1
+        iConcentric     = d > concentric.vec(iD) & d <= concentric.vec(iD+1);
+        concentric.N    = nnz(iConcentric);
+        
+        
+        idx_dist        = grid.concentricI > concentric.vec(iD) & grid.concentricI <= concentric.vec(iD+1);             % Index of pixels within the distance increment
         tmp_prb         = stor_en(:,:,iE);                                  % 2D matrix containing the number of particles per pixel for a given energy threshold
         sum_impact      = sum(tmp_prb(idx_dist));                           % Sum of particles > inBal.eT and within distance increment
         nb_part_dist    = sum(stor_part(idx_dist));                         % Number of particles in the enveloppe
@@ -295,8 +411,8 @@ project.x               = x;            % Easting
 project.y               = y;            % Northing
 project.d               = d;            % Distance from the vent
 project.e               = e;            % Kinetic energy
-project.lat             = gridLat;          % Latitude
-project.lon             = gridLon;          % Longitude
+project.lat             = pixelLat;          % Latitude
+project.lon             = pixelLon;          % Longitude
 project.vLat            = vLat;         % Vent latitude
 project.vLon            = vLon;         % Vent longitude
 project.data            = data;         % All data loaded from input file
@@ -308,20 +424,20 @@ save([pthout, inBal.name, '.mat'], 'project');
 %% 4 Write results
 display(sprintf('\tWriting results'));
 % Number of particles
-writeBAL([pthout, 'nb_part.txt'], gridEast, gridNorth-inBal.gridRes, stor_part);
+writeBAL([pthout, 'nb_part.txt'], pixelEast, pixelNorth-inBal.gridRes, stor_part);
 
 % Probability of a given energy threshold
 for i = 1:length(inBal.eT)
-    writeBAL([pthout, 'prob_pixel_', num2str(inBal.eT(i)), 'J.txt'], gridEast, gridNorth-inBal.gridRes, stor_en(:,:,i));
-    writeBAL([pthout, 'prob_distance_all', num2str(inBal.eT(i)), 'J.txt'], gridEast, gridNorth-inBal.gridRes, dP(:,:,i,1));
-    writeBAL([pthout, 'prob_distance_zone', num2str(inBal.eT(i)), 'J.txt'], gridEast, gridNorth-inBal.gridRes, dP(:,:,i,2));
-    writeBAL([pthout, 'prob_radial_all', num2str(inBal.eT(i)), 'J.txt'], gridEast, gridNorth-inBal.gridRes, rP(:,:,i,1));
-    writeBAL([pthout, 'prob_radial_zone', num2str(inBal.eT(i)), 'J.txt'], gridEast, gridNorth-inBal.gridRes, rP(:,:,i,2));
+    writeBAL([pthout, 'prob_pixel_', num2str(inBal.eT(i)), 'J.txt'], pixelEast, pixelNorth-inBal.gridRes, stor_en(:,:,i));
+    writeBAL([pthout, 'prob_distance_all', num2str(inBal.eT(i)), 'J.txt'], pixelEast, pixelNorth-inBal.gridRes, dP(:,:,i,1));
+    writeBAL([pthout, 'prob_distance_zone', num2str(inBal.eT(i)), 'J.txt'], pixelEast, pixelNorth-inBal.gridRes, dP(:,:,i,2));
+    writeBAL([pthout, 'prob_radial_all', num2str(inBal.eT(i)), 'J.txt'], pixelEast, pixelNorth-inBal.gridRes, rP(:,:,i,1));
+    writeBAL([pthout, 'prob_radial_zone', num2str(inBal.eT(i)), 'J.txt'], pixelEast, pixelNorth-inBal.gridRes, rP(:,:,i,2));
 end
 
 % Energy for a given probability of occurrence
 for i = 1:length(inBal.pT)
-    writeBAL([pthout, 'en_', num2str(inBal.pT(i)), '%.txt'], gridEast, gridNorth-inBal.gridRes, stor_prb(:,:,i));
+    writeBAL([pthout, 'en_', num2str(inBal.pT(i)), '%.txt'], pixelEast, pixelNorth-inBal.gridRes, stor_prb(:,:,i));
 end
 
 

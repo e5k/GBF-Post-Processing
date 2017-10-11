@@ -5,7 +5,7 @@
 %             hazard maps for ballistic impacts
 % Author:     Sebastien Biass, Jean-Luc Falcone, Costanza Bonadonna
 % Created:    April 2015
-% Updated:    July 2015
+% Updated:    November 2017
 % Copyright:  S Biass, JL Falcone, C Bonadonna - University of Geneva, 2015
 % License:    GNU GPL3
 % 
@@ -143,7 +143,7 @@ bal.d       = sqrt((bal.x-inBal.vE).^2 + (bal.y-inBal.vN).^2);  % Distance betwe
 bal.r       = atan2d(bal.x-inBal.vE,bal.y-inBal.vN); bal.r(bal.r<0)  = 360+bal.r(bal.r<0);
 %bal.id      = zeros(size(bal.x,1),2);           % Vectors of indices for cartesian grid
 
-bal.data    = data(:,3:end);                % Colums:
+bal.data    = data(:,3:end);            % Colums:
                                         % 1: Landing altitude (m a.s.l.)
                                         % 2: Mass (kg)
                                         % 3: Diameter (m)
@@ -152,6 +152,9 @@ bal.data    = data(:,3:end);                % Colums:
                                         % 6: Ejection andgle(deg)
                                         % 7: Flight time (sec)
 
+% Convert vent coordinates to geographic
+[inBal.lat, inBal.lon] ...
+            = utm2ll(inBal.vE, inBal.vN, inBal.vZ);
 
 %% Pixel approach
 pixel.eastEdge  = min(bal.x):inBal.gridRes(1):max(bal.x);           % Vector along easting
@@ -167,13 +170,13 @@ pixel.Prel  = zeros(size(pixel.east,1), size(pixel.east,2), length(inBal.eT));  
 
 % Bin the total number of particles
 [pixel.Nt,~,~,bal.xi,bal.yi] = histcounts2(bal.x,bal.y,pixel.eastEdge, pixel.northEdge);
-pixel.Nt = pixel.Nt';   % Translate the results of histcounts2
+pixel.Nt = flipud(pixel.Nt');   % Translate the results of histcounts2
 
 % Calculate the number of particles per pixel per energy threshold and the
 % absolute and relative probabilities (in %)
 for iE = 1:length(inBal.eT)
     pixelTmp            = histcounts2(bal.x(bal.e>inBal.eT(iE)), bal.y(bal.e>inBal.eT(iE)), pixel.eastEdge, pixel.northEdge);   % Bin VBP per energy threshold
-    pixel.N(:,:,iE)     = pixelTmp';
+    pixel.N(:,:,iE)     = flipud(pixelTmp');
     pixel.Pabs(:,:,iE)  = pixel.N(:,:,iE) ./ bal.n .* 100;      % Absolute probability (%)
     pixel.Prel(:,:,iE)  = pixel.N(:,:,iE) ./ pixel.Nt .* 100;   % Relative probability (%)
 end
